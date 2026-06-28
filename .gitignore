@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+google-photos-ready/
+overlays-only/
+logs/
+*.zip
