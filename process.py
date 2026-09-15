@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Snapchat Export Reunifier — main entry point.
+"""Snapchat Export Reunifier — optimized main entry point.
 
-Runs the proven baseline matcher first, retries only unresolved media with the
-timezone-aware matcher, and treats Snapchat's 0,0 GPS placeholder as missing
-location data.
+The baseline matcher runs first; only unresolved media are retried with the
+UTC/CET/CEST-aware matcher. Snapchat's 0,0 GPS placeholder is treated as
+missing. Hashing and media processing can run concurrently.
 """
 
 from collections import defaultdict
 
+import optimized_pipeline
 import process_core as core
 import robust_matcher
-from process_core import *  # re-export the public API used by tests/tools
+from process_core import *  # re-export public helpers used by tests/tools
 
 
 BASE_MATCH_MEDIA = core.match_media
@@ -25,8 +26,7 @@ def parse_location(value):
     return lat, lon
 
 
-# load_metadata resolves parse_location in process_core's module globals, so
-# patch it before processing. This also makes GPS counters/reports ignore 0,0.
+# load_metadata resolves parse_location in process_core's module globals.
 core.parse_location = parse_location
 
 
@@ -83,7 +83,6 @@ def hybrid_match_media(
         if original.entry is not None:
             combined.append(original)
             continue
-
         candidate = retry_by_file.get(original.file)
         if candidate is not None and candidate.entry is not None:
             if candidate.method == "filesystem-time-tz":
@@ -91,12 +90,43 @@ def hybrid_match_media(
             combined.append(candidate)
         else:
             combined.append(original)
-
     return combined
 
 
+def build_parser():
+    parser = core.build_parser()
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=optimized_pipeline.default_workers(),
+        help="Parallel workers for hashing/media processing (default: up to 4)",
+    )
+    parser.add_argument(
+        "--output-layout",
+        choices=("year-month", "flat"),
+        default="year-month",
+        help="Output organization: year-month (current YYYY/MM folders) or flat",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=25,
+        help="Print progress every N completed files (default: 25)",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show per-file progress and detailed warnings/errors",
+    )
+    return parser
+
+
 def main() -> None:
-    args = core.build_parser().parse_args()
+    args = build_parser().parse_args()
+    if args.workers < 1:
+        raise SystemExit("Error: --workers must be >= 1")
+    if args.progress_every < 1:
+        raise SystemExit("Error: --progress-every must be >= 1")
 
     try:
         target_tz = core.resolve_output_timezone(args.timezone, args.tz_offset)
@@ -119,8 +149,7 @@ def main() -> None:
             unsafe_index_fallback=unsafe_index_fallback,
         )
 
-    core.match_media = matcher
-    raise SystemExit(core.process(args))
+    raise SystemExit(optimized_pipeline.process(args, matcher, target_tz))
 
 
 if __name__ == "__main__":
